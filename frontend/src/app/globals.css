@@ -1,26 +1,181 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Cursor Warm Minimalism Palette */
+  --cur-cream: #f2f1ed;
+  --cur-dark: #26251e;
+  --cur-light: #e6e5e0;
+  --cur-surface-100: #f7f7f4;
+  --cur-surface-300: #ebeae5;
+  --cur-surface-500: #e1e0db;
+  
+  /* Brand Accents */
+  --cur-orange: #f54e00;
+  --cur-error: #cf2d56;
+  --cur-success: #1f8a65;
+  
+  /* Timeline Colors */
+  --time-thinking: #dfa88f;
+  --time-grep: #9fc9a2;
+  --time-read: #9fbbe0;
+  --time-edit: #c0a8dd;
+
+  /* Borders (oklab inspired rgba) */
+  --border-primary: rgba(38, 37, 30, 0.1);
+  --border-medium: rgba(38, 37, 30, 0.2);
+  --border-strong: rgba(38, 37, 30, 0.55);
+
+  /* Layout Constants */
+  --max-width: 1200px;
+}
+
+.dark {
+  /* Cursor Dark Mode (Warm Midnight) */
+  --cur-cream: #000000;
+  --cur-dark: #f2f1ed;
+  --cur-light: #09090b;
+  --cur-surface-100: #18181b;
+  --cur-surface-300: #1c1c1f;
+  --cur-surface-500: #27272a;
+  
+  --border-primary: rgba(242, 241, 237, 0.1);
+  --border-medium: rgba(242, 241, 237, 0.2);
+  --border-strong: rgba(242, 241, 237, 0.55);
+
+  --aura-color: rgba(255, 255, 255, 0.04);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-background: var(--cur-cream);
+  --color-foreground: var(--cur-dark);
+  
+  --font-sans: var(--font-inter);
+  --font-serif: var(--font-serif);
+  --font-mono: var(--font-mono);
+
+  --color-cursor-orange: var(--cur-orange);
+  --color-cursor-dark: var(--cur-dark);
+  
+  --radius-8: 8px;
+  --radius-10: 10px;
+  --radius-pill: 9999px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* Base Styles */
+body {
+  background-color: var(--cur-cream);
+  color: var(--cur-dark);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Cursor Typography Rules */
+.font-gothic {
+  font-family: var(--font-inter);
+}
+
+.font-editorial {
+  font-family: var(--font-serif);
+}
+
+.display-hero {
+  font-family: var(--font-inter);
+  font-size: 96px;
+  font-weight: 400;
+  line-height: 1.05;
+  letter-spacing: -3.2px;
+  color: var(--cur-dark);
+}
+
+.section-heading {
+  font-family: var(--font-inter);
+  font-size: 36px;
+  font-weight: 400;
+  line-height: 1.20;
+  letter-spacing: -0.72px;
+  color: var(--cur-dark);
+}
+
+.body-serif {
+  font-family: var(--font-serif);
+  font-size: 19.2px;
+  font-weight: 500;
+  line-height: 1.50;
+  font-feature-settings: "cswh" 1;
+}
+
+.body-standard {
+  font-family: var(--font-serif);
+  font-size: 17.28px;
+  font-weight: 400;
+  line-height: 1.35;
+  color: var(--border-strong);
+}
+
+/* Component Utilities */
+.cursor-pill {
+  background-color: var(--cur-light);
+  color: var(--border-strong);
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-inter);
+  font-size: 14px;
+  transition: color 0.15s ease;
+}
+
+.cursor-pill:hover {
+  color: var(--cur-error);
+}
+
+.cursor-button-primary {
+  background-color: var(--cur-surface-300);
+  color: var(--cur-dark);
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-family: var(--font-inter);
+  font-size: 14px;
+  font-weight: 400;
+  transition: color 0.15s ease;
+}
+
+.cursor-button-primary:hover {
+  color: var(--cur-error);
+}
+
+.cursor-card {
+  background-color: var(--cur-surface-200);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.cursor-card:hover {
+  border-color: var(--border-medium);
+  box-shadow: rgba(0,0,0,0.14) 0px 28px 70px, rgba(0,0,0,0.1) 0px 14px 32px;
+}
+
+/* Custom Effects */
+.aura-bg {
+  background: radial-gradient(circle at center, rgba(255, 255, 255, 0.4) 0%, transparent 70%);
+  filter: blur(60px);
+}
+
+.dark .aura-bg {
+  background: radial-gradient(circle at center, rgba(242, 241, 237, 0.08) 0%, transparent 70%);
+}
+
+@keyframes cursor-entrance {
+  from {
+    transform: translateY(4px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+.animate-cursor {
+  animation: cursor-entrance 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
