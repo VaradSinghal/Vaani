@@ -1,6 +1,11 @@
+"use client";
+
 import { ThemeToggle } from "./ThemeToggle";
+import { useAuth } from "@/context/AuthContext";
 
 export function Navbar() {
+  const { user, loading, signInWithGoogle, logout } = useAuth();
+
   return (
     <nav className="sticky top-0 z-50 w-full bg-cur-cream/80 backdrop-blur-xl border-b border-border-primary transition-all">
       <div className="max-w-[1200px] mx-auto px-6 h-14 flex items-center justify-between">
@@ -21,9 +26,31 @@ export function Navbar() {
 
         <div className="flex items-center gap-3">
           <ThemeToggle />
-          <button className="cursor-button-primary text-[13px] py-1.5 px-3 bg-cur-surface-300 border border-border-primary hover:border-border-medium transition-all">
-            Sign In
-          </button>
+          
+          {loading ? (
+            <div className="w-8 h-8 rounded-full bg-cur-surface-300 animate-pulse" />
+          ) : user ? (
+            <div className="flex items-center gap-3">
+              <img 
+                src={user.photoURL || ""} 
+                alt={user.displayName || "User"} 
+                className="w-8 h-8 rounded-full border border-border-primary"
+              />
+              <button 
+                onClick={logout}
+                className="text-[13px] font-medium text-border-strong hover:text-cursor-dark transition-colors"
+              >
+                Sign Out
+              </button>
+            </div>
+          ) : (
+            <button 
+              onClick={signInWithGoogle}
+              className="cursor-button-primary text-[13px] py-1.5 px-3 bg-cur-surface-300 border border-border-primary hover:border-border-medium transition-all"
+            >
+              Sign In
+            </button>
+          )}
         </div>
       </div>
     </nav>
