@@ -1,8 +1,21 @@
+"use client";
+
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { Navbar } from "@/components/Navbar";
 import { Hero } from "@/components/Hero";
-import { VoiceInterface } from "@/components/VoiceInterface";
+import { useAuth } from "@/context/AuthContext";
 
 export default function Home() {
+  const { user, loading } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!loading && user) {
+      router.push("/home");
+    }
+  }, [user, loading, router]);
+
   return (
     <div className="flex flex-col min-h-screen bg-cur-cream selection:bg-cur-orange/20 selection:text-cur-orange transition-colors duration-300">
       <Navbar />
@@ -36,11 +49,6 @@ export default function Home() {
             </div>
           </div>
         </section>
-
-        {/* The Voice Agent Dashboard */}
-        <div className="bg-cur-cream">
-           <VoiceInterface />
-        </div>
 
         {/* Technical/Code Section */}
         <section className="py-32 bg-cur-surface-500 border-t border-border-primary">

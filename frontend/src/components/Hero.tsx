@@ -1,10 +1,17 @@
-"use client";
-
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/context/AuthContext";
 import MultilingualTitle from "./MultilingualTitle";
 
 export function Hero() {
-  const scrollToAgent = () => {
-    document.getElementById("voice-agent")?.scrollIntoView({ behavior: "smooth" });
+  const { user, signInWithGoogle } = useAuth();
+  const router = useRouter();
+
+  const handleGetStarted = async () => {
+    if (user) {
+      router.push("/home");
+    } else {
+      await signInWithGoogle();
+    }
   };
 
   return (
@@ -20,7 +27,7 @@ export function Hero() {
 
       <div className="flex flex-col sm:flex-row gap-4 opacity-0 animate-cursor [animation-delay:600ms]">
         <button 
-          onClick={scrollToAgent}
+          onClick={handleGetStarted}
           className="cursor-button-primary text-[15px] px-10 py-3 bg-cur-surface-300 border border-border-medium shadow-sm hover:shadow-md transition-all font-medium"
         >
           Get Started
