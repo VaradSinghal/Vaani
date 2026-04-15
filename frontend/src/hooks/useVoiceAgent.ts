@@ -2,7 +2,12 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 
-export function useVoiceAgent() {
+export interface VoiceAgentOptions {
+  onUserTranscript?: (text: string) => void;
+  onAgentTranscript?: (text: string) => void;
+}
+
+export function useVoiceAgent(options?: VoiceAgentOptions) {
   const [isRecording, setIsRecording] = useState(false);
   const [transcripts, setTranscripts] = useState<string[]>([]);
   const [status, setStatus] = useState<"idle" | "listening" | "processing" | "speaking">("idle");
@@ -28,7 +33,13 @@ export function useVoiceAgent() {
       if (typeof event.data === "string") {
         const msg = JSON.parse(event.data);
         if (msg.type === "transcript") {
-           setTranscripts(prev => [...prev, `User: ${msg.text}`]);
+           if (msg.is_final) {
+             setTranscripts(prev => [...prev, `User: ${msg.text}`]);
+             options?.onUserTranscript?.(msg.text);
+           }
+        } else if (msg.type === "agent_transcript") {
+           setTranscripts(prev => [...prev, `Agent: ${msg.text}`]);
+           options?.onAgentTranscript?.(msg.text);
         }
       } else {
         // Audio chunk (binary)

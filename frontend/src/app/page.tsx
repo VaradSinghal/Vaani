@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Navbar } from "@/components/Navbar";
 import { Hero } from "@/components/Hero";
 import { useAuth } from "@/context/AuthContext";
+import { AgentStatusDemo } from "@/components/AgentStatusDemo";
 
 export default function Home() {
   const { user, loading } = useAuth();
@@ -49,6 +50,11 @@ export default function Home() {
             </div>
           </div>
         </section>
+
+        {/* The Voice Agent Preview (Static) */}
+        <div className="bg-cur-cream">
+           <AgentStatusDemo />
+        </div>
 
         {/* Technical/Code Section */}
         <section className="py-32 bg-cur-surface-500 border-t border-border-primary">

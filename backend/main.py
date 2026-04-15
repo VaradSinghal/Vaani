@@ -65,6 +65,13 @@ async def voice_agent_endpoint(websocket: WebSocket):
 
         print(f"ASR ({language_code}): {transcript} (Final: {is_final})")
         
+        # Send user transcript to frontend
+        await websocket.send_json({
+            "type": "transcript",
+            "text": transcript,
+            "is_final": is_final
+        })
+        
         if is_final:
             response_in_progress = True
             print(f"Agent: Generating LLM response for: {transcript}")
@@ -75,6 +82,13 @@ async def voice_agent_endpoint(websocket: WebSocket):
             # Pipe LLM -> Sentence Buffer -> TTS -> Client
             async for sentence in sentence_stream(llm_gen):
                 print(f"LLM Sentence: {sentence}")
+                
+                # Send agent transcript chunk to frontend
+                await websocket.send_json({
+                    "type": "agent_transcript",
+                    "text": sentence
+                })
+                
                 async for audio_chunk in tts_service.stream_tts(sentence, language_code):
                     await websocket.send_bytes(audio_chunk)
             
