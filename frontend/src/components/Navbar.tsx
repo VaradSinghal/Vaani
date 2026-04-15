@@ -31,11 +31,18 @@ export function Navbar() {
             <div className="w-8 h-8 rounded-full bg-cur-surface-300 animate-pulse" />
           ) : user ? (
             <div className="flex items-center gap-3">
-              <img 
-                src={user.photoURL || ""} 
-                alt={user.displayName || "User"} 
-                className="w-8 h-8 rounded-full border border-border-primary"
-              />
+              {user.photoURL ? (
+                <img 
+                  src={user.photoURL} 
+                  alt={user.displayName || "User"} 
+                  className="w-8 h-8 rounded-full border border-border-primary"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="w-8 h-8 rounded-full bg-cur-surface-500 border border-border-primary flex items-center justify-center text-[12px] font-bold text-cursor-dark">
+                  {user.displayName?.charAt(0) || user.email?.charAt(0) || "U"}
+                </div>
+              )}
               <button 
                 onClick={logout}
                 className="text-[13px] font-medium text-border-strong hover:text-cursor-dark transition-colors"
