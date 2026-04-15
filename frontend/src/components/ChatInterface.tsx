@@ -87,11 +87,12 @@ export function ChatInterface({ sessionId }: ChatInterfaceProps) {
               <div className="bg-cur-surface-100 border border-border-primary rounded-2xl px-4 py-2 flex items-center gap-3">
                 <div className={`w-1.5 h-1.5 rounded-full ${
                   status === "listening" ? "bg-cur-orange" : 
-                  status === "processing" ? "bg-time-thinking" : "bg-time-edit"
+                  status === "processing" || status === "thinking" ? "bg-time-thinking" : "bg-time-edit"
                 } animate-ping`} />
                 <span className="font-mono text-[11px] uppercase tracking-widest text-border-strong">
                   {status === "listening" ? "Listening" : 
-                   status === "processing" ? "Thinking" : "Speaking"}
+                   status === "processing" ? "Processing" :
+                   status === "thinking" ? "Thinking" : "Speaking"}
                 </span>
               </div>
             </div>

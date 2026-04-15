@@ -1,6 +1,8 @@
 import asyncio
 import json
 import re
+import io
+import struct
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from services.asr_service import asr_service
 from services.tts_service import tts_service
@@ -19,6 +21,28 @@ if sys.platform == "win32":
 load_dotenv()
 
 app = FastAPI()
+
+def pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int = 1, sample_width: int = 2) -> bytes:
+    """Convert raw PCM Int16 bytes to a valid WAV file."""
+    wav_buffer = io.BytesIO()
+    data_size = len(pcm_bytes)
+    # WAV header
+    wav_buffer.write(b'RIFF')
+    wav_buffer.write(struct.pack('<I', 36 + data_size))  # File size - 8
+    wav_buffer.write(b'WAVE')
+    wav_buffer.write(b'fmt ')
+    wav_buffer.write(struct.pack('<I', 16))  # Chunk size
+    wav_buffer.write(struct.pack('<H', 1))   # PCM format
+    wav_buffer.write(struct.pack('<H', channels))
+    wav_buffer.write(struct.pack('<I', sample_rate))
+    wav_buffer.write(struct.pack('<I', sample_rate * channels * sample_width))  # Byte rate
+    wav_buffer.write(struct.pack('<H', channels * sample_width))  # Block align
+    wav_buffer.write(struct.pack('<H', sample_width * 8))  # Bits per sample
+    wav_buffer.write(b'data')
+    wav_buffer.write(struct.pack('<I', data_size))
+    wav_buffer.write(pcm_bytes)
+    return wav_buffer.getvalue()
+
 
 # Utility to split streaming text into sentences for TTS
 async def sentence_stream(token_generator):
@@ -44,83 +68,95 @@ async def sentence_stream(token_generator):
     if buffer.strip():
         yield buffer.strip()
 
+
 @app.websocket("/voice-agent")
 async def voice_agent_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("Client connected")
+    print("WS: Client connected")
 
-    audio_queue = asyncio.Queue()
-    response_in_progress = False
-
-    async def client_audio_generator():
+    try:
         while True:
-            chunk = await audio_queue.get()
-            if chunk is None: break
-            yield chunk
-
-    async def asr_callback(transcript: str, is_final: bool, language_code: str):
-        nonlocal response_in_progress
-        if response_in_progress:
-            return
-
-        print(f"ASR ({language_code}): {transcript} (Final: {is_final})")
-        
-        # Send user transcript to frontend
-        await websocket.send_json({
-            "type": "transcript",
-            "text": transcript,
-            "is_final": is_final
-        })
-        
-        if is_final:
-            response_in_progress = True
-            print(f"Agent: Generating LLM response for: {transcript}")
+            # Wait for audio recording session
+            audio_chunks: list[bytes] = []
             
-            # Start LLM stream
+            while True:
+                data = await websocket.receive()
+                
+                if "bytes" in data:
+                    audio_chunks.append(data["bytes"])
+                elif "text" in data:
+                    msg = json.loads(data["text"])
+                    if msg.get("type") == "eos":
+                        break
+                    elif msg.get("type") == "ping":
+                        await websocket.send_json({"type": "pong"})
+                        continue
+
+            if not audio_chunks:
+                continue
+            
+            # Combine all audio chunks into a single PCM buffer
+            full_pcm = b"".join(audio_chunks)
+            print(f"WS: Received {len(full_pcm)} bytes of audio ({len(audio_chunks)} chunks)")
+            
+            # Convert PCM to WAV for ASR
+            wav_data = pcm_to_wav(full_pcm)
+            
+            # Step 1: ASR - Transcribe the audio
+            await websocket.send_json({"type": "status", "status": "processing"})
+            transcript, language = await asr_service.transcribe(wav_data)
+            
+            if not transcript or not transcript.strip():
+                print("WS: Empty transcript, skipping")
+                await websocket.send_json({"type": "status", "status": "idle"})
+                continue
+            
+            print(f"WS: Transcript ({language}): {transcript}")
+            
+            # Send transcript to frontend
+            await websocket.send_json({
+                "type": "transcript",
+                "text": transcript,
+                "is_final": True,
+                "language": language
+            })
+            
+            # Step 2: LLM - Generate response
+            await websocket.send_json({"type": "status", "status": "thinking"})
+            
             llm_gen = llm_service.stream_chat(transcript)
             
-            # Pipe LLM -> Sentence Buffer -> TTS -> Client
+            # Step 3: Pipe LLM -> Sentence Buffer -> TTS -> Client
+            await websocket.send_json({"type": "status", "status": "speaking"})
+            
             async for sentence in sentence_stream(llm_gen):
-                print(f"LLM Sentence: {sentence}")
+                print(f"WS: LLM sentence: {sentence}")
                 
-                # Send agent transcript chunk to frontend
+                # Send agent text to frontend
                 await websocket.send_json({
                     "type": "agent_transcript",
                     "text": sentence
                 })
                 
-                async for audio_chunk in tts_service.stream_tts(sentence, language_code):
-                    await websocket.send_bytes(audio_chunk)
+                # TTS - Convert sentence to speech and send
+                audio_bytes = await tts_service.synthesize(sentence, language)
+                if audio_bytes:
+                    await websocket.send_bytes(audio_bytes)
             
-            response_in_progress = False
+            # Signal response complete
+            await websocket.send_json({"type": "response_end"})
+            print("WS: Response complete")
 
-    async def receive_from_client():
-        try:
-            while True:
-                data = await websocket.receive()
-                if "bytes" in data:
-                    await audio_queue.put(data["bytes"])
-                elif "text" in data:
-                    msg = json.loads(data["text"])
-                    if msg.get("type") == "eos":
-                        await audio_queue.put(None)
-                        break
-        except WebSocketDisconnect:
-            print("Client disconnected")
-            await audio_queue.put(None)
-        except Exception as e:
-            print(f"Receive Error: {e}")
-            await audio_queue.put(None)
-
-    try:
-        receive_task = asyncio.create_task(receive_from_client())
-        asr_task = asyncio.create_task(asr_service.stream_asr(client_audio_generator(), asr_callback))
-        await asyncio.gather(receive_task, asr_task)
+    except WebSocketDisconnect:
+        print("WS: Client disconnected")
     except Exception as e:
-        print(f"Main Loop Error: {e}")
+        print(f"WS: Error - {e}")
+        import traceback
+        traceback.print_exc()
     finally:
-        print("Closing connection")
+        print("WS: Connection closed")
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000, ws="wsproto")

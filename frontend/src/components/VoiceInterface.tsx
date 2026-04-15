@@ -33,7 +33,9 @@ export function VoiceInterface() {
             <div className="text-center">
               <h2 className="section-heading !text-[28px] mb-3">
                 {status === "idle" ? "Begin Conversation" : 
-                 status === "listening" ? "Listening..." : "Agent Active"}
+                 status === "listening" ? "Listening..." : 
+                 status === "processing" ? "Processing..." :
+                 status === "thinking" ? "Thinking..." : "Speaking..."}
               </h2>
               <p className="body-standard !text-[16px] max-w-[320px] mx-auto">
                 {isRecording ? "I'm capturing your speech for real-time translation." : "Click the microphone to start a multilingual session."}
