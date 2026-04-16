@@ -25,6 +25,14 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
+@app.on_event("startup")
+async def startup_event():
+    # Pre-cache filler words for instant zero-latency playback
+    from services.tts_service import tts_service
+    print("Pre-caching zero-latency filler words...")
+    await tts_service.get_cached_or_synthesize("एक मिनट, मैं चेक करती हूँ।", "hi-IN")
+    await tts_service.get_cached_or_synthesize("एक मिनट, मैं चेक करती हूँ।", "en-IN")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -67,8 +75,8 @@ def pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int = 1, sa
 # Utility to split streaming text into sentences for TTS
 async def sentence_stream(token_generator):
     buffer = ""
-    # Punctuation marks for various languages including Indian (।, ., ?, !)
-    sentence_endings = r"[।\.\?\!]"
+    # Punctuation marks for various languages including Indian (।, ., ?, !), plus comma/colons for faster first-chunks
+    sentence_endings = r"[।\.\?\!\,:\n]"
     
     async for token in token_generator:
         buffer += token
@@ -101,6 +109,9 @@ async def voice_agent_endpoint(websocket: WebSocket):
             
             while True:
                 data = await websocket.receive()
+                
+                if data["type"] == "websocket.disconnect":
+                    raise WebSocketDisconnect(data.get("code", 1000))
                 
                 if "bytes" in data:
                     audio_chunks.append(data["bytes"])
@@ -141,27 +152,76 @@ async def voice_agent_endpoint(websocket: WebSocket):
                 "language": language
             })
             
-            # Step 2: LLM - Generate response
+            # Step 2: Edge Intent Routing vs LLM - Generate response
             await websocket.send_json({"type": "status", "status": "thinking"})
             
-            llm_gen = llm_service.stream_chat(transcript)
+            transcript_lower = transcript.strip().lower()
+            calendar_intents = [
+                "check my calendar", "what's my schedule", "calendar", 
+                "agenda", "events today", "meetings", "check my schedule", 
+                "what do i have today", "mere meetings", "calendar check karo"
+            ]
+            
+            is_fast_route = any(intent in transcript_lower for intent in calendar_intents)
+            
+            if is_fast_route:
+                print("WS: ROUTER -> Fast-routing to Calendar Tool.")
+                
+                # Push zero-latency filler directly to frontend
+                filler_phrase = "एक मिनट, मैं चेक करती हूँ।"
+                await websocket.send_json({"type": "agent_transcript", "text": filler_phrase})
+                audio_bytes = await tts_service.get_cached_or_synthesize(filler_phrase, language)
+                if audio_bytes:
+                    await websocket.send_bytes(audio_bytes)
+                    
+                # Execute tool directly in Python
+                from services.calendar_service import calendar_service
+                result = calendar_service.get_upcoming_events()
+                
+                # Generate final formatting via LLM
+                fast_prompt = f"Summarize these events concisely for voice playback: {result}"
+                llm_gen = llm_service.stream_chat(transcript, system_prompt=fast_prompt)
+            else:
+                llm_gen = llm_service.stream_chat(transcript)
+            
             
             # Step 3: Pipe LLM -> Sentence Buffer -> TTS -> Client
             await websocket.send_json({"type": "status", "status": "speaking"})
             
-            async for sentence in sentence_stream(llm_gen):
-                print(f"WS: LLM sentence: {sentence}")
+            queue = asyncio.Queue()
+            
+            async def tts_worker():
+                while True:
+                    sentence = await queue.get()
+                    if sentence is None:
+                        break
+                    
+                    # TTS - Convert sentence to speech and send
+                    audio_bytes = await tts_service.get_cached_or_synthesize(sentence, language)
+                    if audio_bytes:
+                        await websocket.send_bytes(audio_bytes)
+                        
+                    queue.task_done()
+            
+            # Start TTS worker concurrently
+            tts_task = asyncio.create_task(tts_worker())
+            
+            # Feed sentences to the queue as fast as LLM produces them
+            try:
+                async for sentence in sentence_stream(llm_gen):
+                    print(f"WS: LLM sentence: {sentence}")
+                    # Send agent text to frontend as soon as we have it
+                    await websocket.send_json({
+                        "type": "agent_transcript",
+                        "text": sentence
+                    })
+                    await queue.put(sentence)
+            except Exception as e:
+                print(f"WS: Error in LLM stream: {e}")
                 
-                # Send agent text to frontend
-                await websocket.send_json({
-                    "type": "agent_transcript",
-                    "text": sentence
-                })
-                
-                # TTS - Convert sentence to speech and send
-                audio_bytes = await tts_service.synthesize(sentence, language)
-                if audio_bytes:
-                    await websocket.send_bytes(audio_bytes)
+            # Wait for all audio to finish
+            await queue.put(None)
+            await tts_task
             
             # Signal response complete
             await websocket.send_json({"type": "response_end"})

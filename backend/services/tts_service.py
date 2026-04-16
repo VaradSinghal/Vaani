@@ -9,12 +9,24 @@ load_dotenv()
 class TTSService:
     def __init__(self):
         self.api_key = os.getenv("SARVAM_API_KEY")
+        self._cache = {}
         if self.api_key:
             self.client = AsyncSarvamAI(api_subscription_key=self.api_key)
             print("TTS: Initialized with Sarvam AI client")
         else:
             self.client = None
             print("TTS: Running in MOCK mode (no API key found)")
+
+    async def get_cached_or_synthesize(self, text: str, lang: str = "hi-IN") -> bytes | None:
+        cache_key = f"{lang}:{text.strip()}"
+        if cache_key in self._cache:
+            print("TTS: Served from memory cache (Zero Latency)!")
+            return self._cache[cache_key]
+        
+        audio = await self.synthesize(text, lang)
+        if audio:
+            self._cache[cache_key] = audio
+        return audio
 
     async def synthesize(self, text: str, lang: str = "hi-IN") -> bytes | None:
         """
