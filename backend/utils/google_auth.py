@@ -13,7 +13,12 @@ SCOPES = [
 def get_google_credentials(interactive=True):
     creds = None
     if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+        try:
+            creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+        except ValueError as e:
+            print(f"GOOGLE AUTH: Invalid token format ({e}). Deleting token.json.")
+            os.remove('token.json')
+            creds = None
     
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:

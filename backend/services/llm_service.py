@@ -15,40 +15,59 @@ class LLMService:
             self.client = None
             print("LLM: Running in MOCK mode (no API key found)")
 
-    async def stream_chat(self, user_input: str, system_prompt: str = None):
+    async def stream_chat(self, user_input: str, session_id: str = None, user_id: str = None, system_prompt: str = None):
+        """Stream chat with memory-augmented context."""
         if not self.client:
             # Mock behavior
             print("LLM: Mocking response...")
             yield "नमस्ते! मैं आपकी क्या सहायता कर सकता हूँ?"
             return
 
+        # Build base system prompt with tool commands
         if not system_prompt:
             import datetime
             now_str = datetime.datetime.now().isoformat()
             system_prompt = (
-                f"You are 'Vaani', a concise voice agent. Current time: {now_str}. "
-                "To use a tool, your very first characters MUST be a COMMAND STRING, nothing else. "
-                "Commands:\n"
+                f"You are 'Vaani', an expert personal assistant. Current time: {now_str}. "
+                "You have access to DOCUMENT KNOWLEDGE (uploaded files) and USER MEMORY (past facts). "
+                "IMPORTANT: If a tool needs info (email, name, date) that is in your KNOWLEDGE or MEMORY, use it automatically! "
+                "Example: If user says 'Email the invoice total', search DOCUMENT KNOWLEDGE for the total first.\n\n"
+                "To use a tool, start with a COMMAND STRING:\n"
                 "1. GET_AGENDA\n"
-                "2. BOOK|Meeting Title|2026-04-16T15:00:00|2026-04-16T16:00:00\n"
-                "3. DETAILS|Meeting Title\n"
-                "4. CANCEL|Meeting Title\n"
+                "2. BOOK|Title|StartISO|EndISO\n"
+                "3. DETAILS|Title\n"
+                "4. CANCEL|Title\n"
                 "5. GMAIL_READ\n"
                 "6. GMAIL_SEND|recipient|subject|body\n"
                 "7. NOTION_NOTE|text\n"
                 "8. SLACK_READ|channel\n"
                 "9. SLACK_MSG|channel|text\n"
-                "To use, output JUST the command. Do not add formatting. "
-                "If no tool is needed, respond naturally."
+                "Output ONLY the command. If no tool is needed, respond naturally."
             )
 
+        # Augment system prompt with memory context (document facts + user facts)
+        from services.memory_service import memory_service
+        augmented_prompt, history, attribution = memory_service.build_augmented_prompt(
+            session_id=session_id,
+            user_id=user_id,
+            user_query=user_input,
+            base_system_prompt=system_prompt,
+        )
+        base_system_for_tools = system_prompt  # Keep un-augmented version for tool follow-up
+
         try:
+            # Yield attribution to frontend if documents were retrieved
+            if attribution.get("sources"):
+                yield {"type": "attribution", "sources": attribution["sources"]}
+
+            # Build messages with memory: system + history + current user input
+            messages = [{"role": "system", "content": augmented_prompt}]
+            messages.extend(history)  # Previous turns from session memory
+            messages.append({"role": "user", "content": user_input})
+
             stream = await self.client.chat.completions(
                 model="sarvam-105b",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_input}
-                ],
+                messages=messages,
                 temperature=0.7,
                 stream=True
             )
@@ -78,6 +97,9 @@ class LLMService:
                         else:
                             yield content
             
+            # Collect full response text for memory storage
+            full_response = text_so_far if not is_tool_call else ""
+
             if is_tool_call:
                 # The LLM sometimes injects random newlines. Clean it completely.
                 tool_buffer = text_so_far.replace('\n', '').replace('\r', '').strip()
@@ -131,7 +153,10 @@ class LLMService:
                     result = f"Tool failure: {str(e)}"
                     print(f"LLM TOOL ERROR: {result} - Buffer: {tool_buffer}")
                     
-                follow_up = f"{system_prompt}\n\n[TOOL RESULT]:\n{result}\n\nConcisely summarize this result for the user in spoken format."
+                # Unified summary: include both the tool result AND the memory context 
+                # so the agent can reason across both (e.g., "I added it to the Notion page we discussed").
+                follow_up = f"{augmented_prompt}\n\n[TOOL RESULT]:\n{result}\n\nConcisely summarize this result for the user in spoken format."
+                
                 second_stream = await self.client.chat.completions(
                     model="sarvam-105b",
                     messages=[
@@ -141,12 +166,26 @@ class LLMService:
                     temperature=0.4,
                     stream=True
                 )
+                tool_response_text = ""
                 async for chunk2 in second_stream:
                     if chunk2.choices and chunk2.choices[0].delta.content:
+                        tool_response_text += chunk2.choices[0].delta.content
                         yield chunk2.choices[0].delta.content
+                full_response = tool_response_text
                         
         except Exception as e:
             print(f"LLM Streaming Error: {e}")
+            return
+
+        # --- Post-response memory updates (non-blocking) ---
+        if session_id and full_response:
+            # Store turn in session memory
+            memory_service.add_turn(session_id, "user", user_input)
+            memory_service.add_turn(session_id, "assistant", full_response)
+
+        if user_id and user_id != "anonymous" and full_response:
+            # Extract and persist user facts - AWAIT for synchronicity if session_id is active
+            await memory_service.extract_and_save_facts(user_id, user_input, full_response)
 
     async def generate_title(self, user_input: str) -> str:
         if not self.client:

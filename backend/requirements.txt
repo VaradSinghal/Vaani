@@ -9,3 +9,8 @@ google-auth-httplib2
 google-auth-oauthlib
 notion-client
 slack_sdk
+sentence-transformers
+numpy
+python-multipart
+aiofiles
+PyPDF2

@@ -3,10 +3,14 @@ import json
 import re
 import io
 import struct
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import uuid
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Query
 from services.asr_service import asr_service
 from services.tts_service import tts_service
 from services.llm_service import llm_service
+from services.vector_store import vector_store
+from services.memory_service import memory_service
+from services.document_service import document_service
 import sys
 import codecs
 from dotenv import load_dotenv
@@ -27,6 +31,10 @@ app = FastAPI()
 
 @app.on_event("startup")
 async def startup_event():
+    # Load persisted vector store from disk
+    print("Loading vector store from disk...")
+    vector_store.load_from_disk()
+    
     # Pre-cache filler words for instant zero-latency playback
     from services.tts_service import tts_service
     from utils.google_auth import get_google_credentials
@@ -34,10 +42,10 @@ async def startup_event():
     await tts_service.get_cached_or_synthesize("एक मिनट, मैं चेक करती हूँ।", "hi-IN")
     await tts_service.get_cached_or_synthesize("एक मिनट, मैं चेक करती हूँ।", "en-IN")
     
-    print("Checking Google Workspace Authentication...")
+    # print("Checking Google Workspace Authentication...")
     # This will open a browser window if token.json is missing/invalid
     # It runs at startup so it doesn't block the WebSocket loop later
-    get_google_credentials(interactive=True)
+    # get_google_credentials(interactive=True)
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,6 +62,65 @@ class TitleRequest(BaseModel):
 async def generate_title_endpoint(req: TitleRequest):
     title = await llm_service.generate_title(req.message)
     return {"title": title}
+
+
+# ─── Document Upload & Management Endpoints ──────────────────────────
+
+@app.post("/api/upload-document")
+async def upload_document(
+    file: UploadFile = File(...),
+    language: str = Form("en-IN"),
+    user_id: str = Form("anonymous"),
+):
+    """Upload a document → parse → extract facts → vectorize."""
+    file_bytes = await file.read()
+    
+    if len(file_bytes) > 10 * 1024 * 1024:  # 10MB limit
+        return {"error": "File too large. Maximum 10MB."}
+    
+    result = await document_service.process_document(
+        file_bytes=file_bytes,
+        filename=file.filename,
+        language=language,
+    )
+    return result
+
+
+@app.get("/api/documents")
+async def list_documents():
+    """List all processed documents in the vector store."""
+    docs = vector_store.get_documents()
+    return {"documents": docs, "total_facts": vector_store.total_facts}
+
+
+@app.delete("/api/documents/{doc_id}")
+async def delete_document(doc_id: str):
+    """Remove a document and its facts from the vector store."""
+    vector_store.remove_document(doc_id)
+    vector_store.save_to_disk()
+    return {"status": "deleted", "doc_id": doc_id}
+
+
+@app.get("/api/search")
+async def search_documents(q: str = Query(...), top_k: int = Query(5)):
+    """Search document facts by semantic similarity."""
+    results = vector_store.search(q, top_k=top_k)
+    return {
+        "query": q,
+        "results": [
+            {"text": r.text, "score": round(r.score, 3), "doc_title": r.doc_title, "doc_type": r.doc_type}
+            for r in results
+        ]
+    }
+
+
+# ─── Memory Endpoints ────────────────────────────────────────────────
+
+@app.get("/api/memory/{user_id}")
+async def get_user_memory(user_id: str):
+    """View stored user facts."""
+    facts = memory_service.get_user_facts(user_id)
+    return {"user_id": user_id, "facts": facts, "count": len(facts)}
 
 
 def pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int = 1, sample_width: int = 2) -> bytes:
@@ -85,7 +152,12 @@ async def sentence_stream(token_generator):
     sentence_endings = r"[।\.\?\!\,:\n]"
     
     async for token in token_generator:
-        buffer += token
+        if isinstance(token, dict):
+            # Pass through metadata objects (like attribution)
+            yield token
+            continue
+            
+        buffer += str(token)
         # Check if we have a full sentence
         parts = re.split(f"({sentence_endings})", buffer)
         
@@ -106,7 +178,11 @@ async def sentence_stream(token_generator):
 @app.websocket("/voice-agent")
 async def voice_agent_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("WS: Client connected")
+    
+    # Generate unique session ID and extract user ID from query params
+    session_id = str(uuid.uuid4())[:12]
+    user_id = websocket.query_params.get("uid", "anonymous")
+    print(f"WS: Client connected (session={session_id}, user={user_id[:8]}...)")
 
     try:
         while True:
@@ -161,8 +237,12 @@ async def voice_agent_endpoint(websocket: WebSocket):
             # Step 2: Agent Response Generation
             await websocket.send_json({"type": "status", "status": "thinking"})
             
-            # Use the unified Agent pipeline in LLM service (handles tools, filler words, and summary)
-            llm_gen = llm_service.stream_chat(transcript)
+            # Use the unified Agent pipeline in LLM service with memory context
+            llm_gen = llm_service.stream_chat(
+                transcript,
+                session_id=session_id,
+                user_id=user_id,
+            )
             
             
             # Step 3: Pipe LLM -> Sentence Buffer -> TTS -> Client
@@ -188,7 +268,25 @@ async def voice_agent_endpoint(websocket: WebSocket):
             
             # Feed sentences to the queue as fast as LLM produces them
             try:
-                async for sentence in sentence_stream(llm_gen):
+                async for item in sentence_stream(llm_gen):
+                    if isinstance(item, dict):
+                        # Handle metadata like attribution
+                        if item.get("type") == "attribution":
+                            await websocket.send_json(item)
+                        continue
+                    
+                    sentence = item
+                    # Check for tool-related status updates in the first few characters
+                    chk = sentence.strip().upper()
+                    if "GET_AGENDA" in chk or "BOOK" in chk:
+                        await websocket.send_json({"type": "status", "status": "checking_calendar"})
+                    elif "GMAIL" in chk:
+                        await websocket.send_json({"type": "status", "status": "reading_emails"})
+                    elif "SLACK" in chk:
+                        await websocket.send_json({"type": "status", "status": "checking_slack"})
+                    elif "NOTION" in chk:
+                        await websocket.send_json({"type": "status", "status": "taking_notes"})
+                    
                     print(f"WS: LLM sentence: {sentence}")
                     # Send agent text to frontend as soon as we have it
                     await websocket.send_json({
@@ -208,13 +306,15 @@ async def voice_agent_endpoint(websocket: WebSocket):
             print("WS: Response complete")
 
     except WebSocketDisconnect:
-        print("WS: Client disconnected")
+        print(f"WS: Client disconnected (session={session_id})")
     except Exception as e:
         print(f"WS: Error - {e}")
         import traceback
         traceback.print_exc()
     finally:
-        print("WS: Connection closed")
+        # Clean up session memory
+        memory_service.clear_session(session_id)
+        print(f"WS: Connection closed (session={session_id})")
 
 
 if __name__ == "__main__":

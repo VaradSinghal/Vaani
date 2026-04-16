@@ -38,3 +38,6 @@ env/
 Thumbs.db
 credentials.json
 token.json
+
+# Local data (memory, vectors, uploads)
+data/
