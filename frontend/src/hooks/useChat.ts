@@ -28,6 +28,7 @@ export interface ChatMessage {
   id: string;
   role: "User" | "Agent";
   text: string;
+  sources?: string[];
   createdAt: Timestamp;
 }
 
@@ -96,12 +97,13 @@ export function useChat(sessionId?: string) {
     return sessionRef.id;
   };
 
-  const addMessage = async (sessId: string, role: "User" | "Agent", text: string) => {
+  const addMessage = async (sessId: string, role: "User" | "Agent", text: string, sources?: string[]) => {
     if (!user || !sessId) return;
 
     await addDoc(collection(db, "users", user.uid, "sessions", sessId, "messages"), {
       role,
       text,
+      sources: sources || null,
       createdAt: serverTimestamp(),
     });
 

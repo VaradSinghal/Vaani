@@ -3,9 +3,12 @@
 import { useState, useRef, useCallback } from "react";
 
 export interface VoiceAgentOptions {
+  uid?: string;
   onUserTranscript?: (text: string) => void;
   onAgentTranscript?: (text: string) => void;
+  onAttribution?: (sources: string[]) => void;
   onStatusChange?: (status: string) => void;
+  agentId?: string;
 }
 
 export function useVoiceAgent(options?: VoiceAgentOptions) {
@@ -83,7 +86,13 @@ export function useVoiceAgent(options?: VoiceAgentOptions) {
         wsRef.current = null;
       }
 
-      const ws = new WebSocket("ws://localhost:8000/voice-agent");
+      const uid = optionsRef.current?.uid || "anonymous";
+      const agentId = optionsRef.current?.agentId;
+      const url = new URL(`ws://localhost:8000/voice-agent`);
+      url.searchParams.append("uid", uid);
+      if (agentId) url.searchParams.append("agent_id", agentId);
+      
+      const ws = new WebSocket(url.toString());
       wsRef.current = ws;
 
       ws.binaryType = "arraybuffer";
@@ -111,6 +120,8 @@ export function useVoiceAgent(options?: VoiceAgentOptions) {
             } else if (msg.type === "agent_transcript") {
               setTranscripts(prev => [...prev, `Agent: ${msg.text}`]);
               optionsRef.current?.onAgentTranscript?.(msg.text);
+            } else if (msg.type === "attribution") {
+              optionsRef.current?.onAttribution?.(msg.sources);
             } else if (msg.type === "status") {
               setStatus(msg.status);
               optionsRef.current?.onStatusChange?.(msg.status);

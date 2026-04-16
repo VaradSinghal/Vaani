@@ -57,6 +57,7 @@
   --color-cursor-dark: var(--cur-dark);
   --color-cur-cream: var(--cur-cream);
   --color-cur-dark: var(--cur-dark);
+  --color-cur-error: var(--cur-error);
   
   --radius-8: 8px;
   --radius-10: 10px;
@@ -180,4 +181,23 @@ body {
 
 .animate-cursor {
   animation: cursor-entrance 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Studio Space Utilities */
+.studio-grid {
+  background-image: radial-gradient(var(--cur-dark) 1px, transparent 1px);
+  background-size: 24px 24px;
+  opacity: 0.05;
+}
+
+.studio-inset-frame {
+  box-shadow: inset 0 0 0 1px var(--border-primary);
+  border-radius: 40px;
+  pointer-events: none;
+}
+
+.hud-studio {
+  backdrop-filter: blur(48px);
+  background-color: rgba(255, 255, 255, 0.45);
+  border-top: 1px solid var(--border-medium);
 }
