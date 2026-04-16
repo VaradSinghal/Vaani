@@ -1,128 +1,106 @@
 # Vaani 🎙️
 
-Vaani is a production-ready, ultra-low latency multilingual voice agent platform optimized for Indian languages. Vaani is designed to provide seamless, real-time voice interactions with sub-second latency through an advanced, decoupled streaming pipeline and an orchestration of powerful language models.
-
-By leveraging Sarvam AI's localized models, Vaani bridges the gap between state-of-the-art linguistic processing and premium, responsive user interfaces, creating a full-duplex conversational pipeline capable of understanding, reasoning, and speaking natively.
+Vaani is a production-ready, ultra-low latency multilingual voice agent platform. It transforms standard AI interactions into stateful, context-aware productivity sessions through a custom "Intelligence Layer" that combines RAG-less knowledge retrieval, multi-turn conversational memory, and intelligent document parsing.
 
 ---
 
 ## 🏛️ System Architecture
 
-Vaani operates seamlessly across a sleek Next.js client and a heavily optimized Python backend. The architecture prioritizes **Time to First Byte (TTFB)** and **Time to Interaction (TTI)**, utilizing async streams, caching, and edge routing to minimize perceived latency.
+Vaani decoupled architecture ensures sub-second latency while maintaining high precision across multiple Indian languages.
 
 ```mermaid
 graph TD
-    subgraph Frontend Client
-        Mic[Microphone] -.->|16-bit PCM Audio| WS_Client[WebSocket Client]
-        WS_Client -.->|Raw Audio Chunks| Backend_WS
-        Backend_WS -.->|Audio Bytes| AudioCtx[Web Audio API]
-        Backend_WS -.->|Status Updates| UI[React UI State]
+    subgraph Client
+        UI[React UI] <--> WS[WebSocket]
     end
 
-    subgraph FastAPI Backend
-        Backend_WS[WebSocket Endpoint]
-        ASR[ASR Service \n saaras:v3]
-        Router{Edge Intent \n Router}
-        Tool[Tool Engine \n e.g. Calendar]
-        LLM[LLM Service \n sarvam-105b]
-        Buffer[Sentence \n Buffer]
-        TTS[TTS Worker Queue \n bulbul:v2]
-        Memory[Memory Service \n Short/Long-term]
-        Store[(Local Vector Store \n Atomic Facts)]
-
-        Backend_WS -->|1. PCM to WAV| ASR
-        ASR -->|2. Transcript & Lang| Router
-        Router -->|3a. Call Tool| Tool
-        Router -->|3b. Query LLM| LLM
-        
-        Memory <-->|Context Enrichment| LLM
-        Store <-->|RAG-less Facts| Memory
-        
-        Tool -->|Result| LLM
-        LLM -->|4. Token Stream| Buffer
-        Buffer -->|5. Chunked Sentences| TTS
-        TTS -->|6. Synthesized Audio| Backend_WS
+    subgraph "Backend - Intelligence Layer"
+        Parser[1. Doc Parsing Pipeline]
+        Vector[2. RAG-less Retrieval]
+        Memory[3. Conversational Layer]
     end
+
+    WS <--> |Transcript/Audio| Memory
+    Memory <--> |Context| Vector
+    Parser --> |Atomic Facts| Vector
 ```
 
 ---
 
-## 🧠 The Intelligence Layer
+## 1. 📄 Intelligent Document Parsing Pipeline
+Vaani handles everything from digital PDFs to messy, hand-written receipts using a hybrid ingress pipeline.
 
-Vaani isn't just a voice-to-text wrapper; it possesses a stateful "brain" that remembers your habits and reasons over your documents.
+### The Pipeline Flow
+```mermaid
+graph LR
+    Doc[File Upload] --> Type{MIME Type?}
+    Type -->|Digital PDF| Fast[Fast Path: PyPDF2]
+    Type -->|Image/Scanned| OCR[Visual Path: Sarvam DocIntel]
+    Fast --> Classify[LLM: Document Classification]
+    OCR --> Classify
+    Classify --> Factify[LLM: Atomic Fact Extraction]
+    Factify --> VectorStore[Numpy Vector Store]
+```
 
-### ⚡ RAG-less Hybrid Retrieval
-Traditional RAG (Retrieval-Augmented Generation) often suffers from "chunking noise" and high latency. Vaani implements a **RAG-less** alternative:
-- **Extraction-First:** Instead of storing raw text chunks, we use `sarvam-105b` to extract **atomic facts** (stand-alone truths) at upload time.
-- **Local Vector Search:** Facts are embedded once using a local transformer (`paraphrase-multilingual-MiniLM-L12-v2`) and stored in a lightweight `numpy` store.
-- **Micro-Latency:** Retrieval happens in **<2ms**, providing the LLM with clean, high-signal facts without the overhead of an external vector database.
-
-### 🧠 Conversational Memory Layer
-Vaani maintains a persistent identity through a tri-tier memory system:
-1.  **Short-term (Session):** A sliding window of the last 8 turns (16 messages) to maintain coherent multi-turn dialogue.
-2.  **Long-term (User Facts):** After every turn, the agent autonomously extracts permanent user details (e.g., *"User's daughter is named Ananya"*) to a local persistent store.
-3.  **Knowledge (Documents):** Relevant facts from your uploaded documents are injected into the system prompt based on semantic similarity to the current turn.
-
-### 📄 Intelligent Document Understanding
-A hybrid processing path ensures 100% fidelity across all document types:
-- **Fast Path:** Digital PDFs are parsed instantly using `PyPDF2` with zero API cost.
-- **Visual Path:** Scanned documents, receipts, and images are processed via **Sarvam Document Intelligence** (OCR + Layout analysis).
-- **Classification:** Every document is automatically classified (Invoice, Report, Letter, etc.) to tailor the fact extraction prompt.
+- **Visual Fidelity**: Uses `Sarvam DocIntel` for OCR, layout analysis, and Markdown conversion of scanned documents.
+- **Auto-Classification**: Documents are categorized (e.g., *Invoice*, *Legal*, *Personal*) to adjust the grounding intensity.
+- **Extraction vs. Chunking**: Instead of naive text splitting, we use `sarvam-105b` to distill the document into 10-20 stand-alone, searchable truths (Atomic Facts).
 
 ---
 
-## ⚡ The Streaming Pipeline
+## 2. ⚡ RAG-less Hybrid Retrieval
+Traditional RAG (Retrieval-Augmented Generation) is often slow and noisy. Vaani's **RAG-less** architecture optimizes for speed and precision.
 
-Our sub-800ms pipeline processes fragments of conversation concurrently.
+### The Architecture
+```mermaid
+graph TD
+    Query[User Query] --> Embed[Local Embedder: MiniLM-L12]
+    Embed --> Search[Numpy Cosine Similarity]
+    Search -->|Score > 0.35| Filter[Relevant Atomic Facts]
+    Filter --> Prompt[Augmented System Prompt]
+```
 
-### 1. Ingestion & ASR
-- The browser captures raw 16kHz, 16-bit PCM audio chunks and streams them via WebSocket.
-- The Python server reconstructs WAV headers in memory and dispatches to `saaras:v3`.
-
-### 2. Edge Intent Routing & Zero-Latency Masking
-- The backend evaluates the transcript against fast-match intents.
-- **Latency Masking:** If a tool execution is required, the server instantly pipes a pre-cached filler audio chunk (e.g., *"एक मिनट, मैं चेक करती हूँ।"*) back to the user.
-
-### 3. Asynchronous LLM Token Streaming
-- The prompt is routed to `sarvam-105b`. Tokens stream back via an `async generator`.
-
-### 4. Smart Sentence Buffering
-- Native tokens are piped into a custom **regex sentence buffer** that aggressively splits based on grammatical markers (e.g., `.` or Hindi `।`).
+- **Local-First**: Embeddings are computed and searched locally using `numpy` and `sentence-transformers`. No external Vector DB latency.
+- **Atomic Facts**: Because we retrieve clean "facts" (e.g., *"The invoice total is ₹5,400"*) instead of raw text chunks, the LLM avoids hallucinations and stays focused.
+- **Cross-Language**: The pre-cached `paraphrase-multilingual` model allows a query in Hindi to retrieve facts extracted from an English document.
 
 ---
 
-## 🛠️ Technical Stack
+## 3. 🧠 Conversational Memory Layer
+Vaani remembers who you are across sessions and context across turns.
 
-**Frontend**
-- **Framework:** Next.js 16, React 19
-- **Design:** Tailwind CSS v4, custom cursor-inspired typography
-- **Auth:** Firebase Auth
-- **Audio IO:** Web Audio API, `MediaRecorder`
+### The Memory Hierarchy
+```mermaid
+graph TD
+    subgraph "Session History (Short-term)"
+        S1[Turn 1] --> S2[Turn 2] --> S3[Turn 8]
+    end
+    
+    subgraph "User Profile (Long-term)"
+        Facts[Facts: Habits, Names, Preferences]
+    end
 
-**Backend**
-- **Framework:** FastAPI, Uvicorn, WebSockets
-- **AI Core:** Sarvam AI SDK (`sarvam-105b`, `saaras:v3`, `bulbul:v2`)
-- **Memory:** Local `numpy` Vector Store, Persistent JSON
+    Input[User Message] --> History[Session History Window]
+    History --> Profile[User Fact Retrieval]
+    Profile --> Knowledge[Document Fact Retrieval]
+    Knowledge --> FINAL[Augmented Prompt Construction]
+```
+
+- **Short-term Memory**: A sliding window of the last 8 turns is maintained in memory for immediate context.
+- **Long-term Fact Extraction**: After every turn, an async task analyzes the conversation to extract permanent user details (e.g., *"User prefers meeting summaries in Hindi"*).
+- **Graceful Persistence**: User facts are persisted as local JSON and capped to maintain sub-20ms prompt construction times.
 
 ---
 
-## 🚀 Getting Started
+## 🛠️ Getting Started
 
 ### Prerequisites
 - Node.js (v20+)
 - Python (3.10+)
-- A [Sarvam AI API Key](https://sarvam.ai/)
+- [Sarvam AI API Key](https://sarvam.ai/)
 
-### Backend Setup
-1. `cd backend`
-2. `pip install -r requirements.txt`
-3. Set `SARVAM_API_KEY` in `backend/.env`.
-4. Run `python main.py`.
-
-### Frontend Setup
-1. `cd frontend`
-2. `npm install`
-3. `npm run dev`
+### Setup
+Please refer to the separate [Backend Setup](file:///e:/Projects/Vaani/backend/README.md) and [Frontend Setup](file:///e:/Projects/Vaani/frontend/README.md) guides for installation details.
 
 ---
 *© 2026 Vaani AI. A Voice-First Productivity Platform.*
