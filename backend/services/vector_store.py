@@ -56,15 +56,29 @@ class VectorStore:
         self.embeddings: Optional[np.ndarray] = None  # (N, 384)
         self._initialized = False
 
+    def initialize(self):
+        """Force eager loading of the model at startup."""
+        self._get_model()
+        self._initialized = True
+
     def _get_model(self):
-        """Lazy-load the embedding model on first use."""
+        """Load the embedding model. Enforces local_files_only for performance."""
         if self._model is None:
             with self._model_lock:
                 if self._model is None:
                     from sentence_transformers import SentenceTransformer
-                    print("VectorStore: Loading multilingual embedding model...")
-                    self._model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-                    print("VectorStore: Model loaded (384-dim, 50+ languages)")
+                    print("VectorStore: Loading multilingual embedding model (OFFLINE)...")
+                    try:
+                        self._model = SentenceTransformer(
+                            'paraphrase-multilingual-MiniLM-L12-v2',
+                            local_files_only=True
+                        )
+                        print("VectorStore: Model loaded (384-dim, 50+ languages)")
+                    except Exception as e:
+                        print(f"VectorStore: ERROR - Failed to load model offline: {e}")
+                        print("VectorStore: Ensure the model is downloaded to the local cache.")
+                        # Fallback for dev if needed (but user requested offline)
+                        # self._model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2') 
         return self._model
 
     def add_facts(self, facts: list[str], doc_id: str, doc_title: str, doc_type: str = "unknown"):

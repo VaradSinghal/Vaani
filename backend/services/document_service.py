@@ -64,6 +64,8 @@ class DocumentService:
                 "processed_at": str,
             }
         """
+        import time
+        start_time = time.time()
         doc_id = str(uuid.uuid4())[:8]
         
         # Save file to disk
@@ -108,16 +110,23 @@ class DocumentService:
                 "processed_at": datetime.now().isoformat(),
             }
 
-        # Step 2: Classify document type
-        doc_type = await self._classify_document(extracted_text[:1000])
+        # Step 2 & 3: Parallel Metadata and Fact Extraction
+        import time
+        start_llm = time.time()
         
-        # Step 3: Generate a title
-        title = await self._generate_title(extracted_text[:500], filename)
+        # We run metadata extraction (title/type) and fact extraction in parallel
+        metadata_task = self._extract_metadata(extracted_text[:1000], filename)
+        facts_task = self._extract_facts(extracted_text, "document")
+        
+        metadata, facts = await asyncio.gather(metadata_task, facts_task)
+        
+        doc_type = metadata.get("doc_type", "document")
+        title = metadata.get("title", filename)
 
-        # Step 4: Extract atomic facts
-        facts = await self._extract_facts(extracted_text, doc_type)
+        llm_duration = time.time() - start_llm
+        print(f"DocService: LLM parallel processing took {llm_duration:.2f}s")
 
-        # Step 5: Vectorize and store
+        # Step 4: Vectorize and store
         if facts:
             from services.vector_store import vector_store
             vector_store.add_facts(facts, doc_id, title, doc_type)
@@ -133,8 +142,47 @@ class DocumentService:
             "processed_at": datetime.now().isoformat(),
         }
         
-        print(f"DocService: Processed '{filename}' → {doc_type}, {len(facts)} facts extracted")
+        print(f"DocService: Processed '{filename}' in {time.time() - start_time:.2f}s total")
         return result
+
+    def get_full_text(self, doc_id: str) -> Optional[str]:
+        """
+        Retrieves the full raw parsed text of a document by its ID.
+        Checks for existing markdown/text output in the parsed directory.
+        """
+        parsed_dir = os.path.join(UPLOAD_DIR, "parsed")
+        if not os.path.exists(parsed_dir):
+            return None
+
+        # Look for files starting with doc_id
+        for filename in os.listdir(parsed_dir):
+            if filename.startswith(doc_id):
+                path = os.path.join(parsed_dir, filename)
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        return f.read()
+                except Exception as e:
+                    print(f"DocService: Error reading parsed doc {doc_id}: {e}")
+                    return None
+        
+        # Fallback: Check if it was a plain text/md file in the original uploads
+        for filename in os.listdir(UPLOAD_DIR):
+            if filename.startswith(doc_id):
+                path = os.path.join(UPLOAD_DIR, filename)
+                # If it's a text/md file, just read it
+                if any(path.endswith(ext) for ext in ['.txt', '.md', '.csv']):
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            return f.read()
+                    except Exception:
+                        pass
+                # If it's a PDF, try to extract text on-the-fly if needed
+                elif path.endswith('.pdf'):
+                    with open(path, "rb") as f:
+                        return self._extract_pdf_text(f.read())
+                # If it's an image, we'd need DocIntel (skip for now to avoid long blocking)
+
+        return None
 
     def _extract_pdf_text(self, pdf_bytes: bytes) -> str:
         """Fast local PDF text extraction using PyPDF2. Zero API cost."""
@@ -192,72 +240,46 @@ class DocumentService:
             traceback.print_exc()
             return ""
 
-    async def _classify_document(self, text_preview: str) -> str:
+    async def _extract_metadata(self, text_preview: str, filename: str) -> dict:
         """
-        Classify document type using LLM.
-        Not naive filename-based — handles noisy/scanned inputs.
+        Combine classification and titling into one fast LLM call.
+        Uses sarvam-30b for lower latency.
         """
         if not self._sarvam_client:
-            return "document"
+            return {"doc_type": "document", "title": filename}
 
         try:
             from sarvamai import AsyncSarvamAI
             async_client = AsyncSarvamAI(api_subscription_key=self.api_key)
             
             prompt = (
-                "Classify the following document into ONE of these types: "
-                "invoice, receipt, report, letter, form, contract, resume, "
-                "certificate, id_card, bank_statement, medical, other. "
-                "Respond with ONLY the type, nothing else.\n\n"
-                f"Document text:\n{text_preview[:800]}"
+                "Analyze the following document preview and extract meta-information.\n"
+                "Return a JSON object with exactly two keys: 'doc_type' and 'title'.\n\n"
+                "Constraints:\n"
+                "- doc_type: one of [invoice, receipt, report, letter, form, contract, resume, certificate, id_card, bank_statement, medical, other]\n"
+                "- title: a concise title (max 5 words)\n\n"
+                f"Filename: {filename}\n"
+                f"Content preview:\n{text_preview[:800]}"
             )
             
             response = await async_client.chat.completions(
-                model="sarvam-105b",
+                model="sarvam-30b", # Using faster model for metadata
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
                 stream=False
             )
             
-            doc_type = response.choices[0].message.content.strip().lower()
-            # Sanitize — ensure it's one of our known types
-            known_types = {"invoice", "receipt", "report", "letter", "form", "contract",
-                          "resume", "certificate", "id_card", "bank_statement", "medical", "other"}
-            if doc_type not in known_types:
-                doc_type = "document"
-            
-            return doc_type
+            raw = response.choices[0].message.content.strip()
+            # Basic JSON extraction for robustness
+            import json
+            import re
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if match:
+                return json.loads(match.group())
+            return {"doc_type": "document", "title": filename}
         except Exception as e:
-            print(f"DocService: Classification failed: {e}")
-            return "document"
-
-    async def _generate_title(self, text_preview: str, filename: str) -> str:
-        """Generate a concise document title using LLM."""
-        if not self._sarvam_client:
-            return os.path.splitext(filename)[0]
-
-        try:
-            from sarvamai import AsyncSarvamAI
-            async_client = AsyncSarvamAI(api_subscription_key=self.api_key)
-            
-            prompt = (
-                "Generate a very short title (max 5 words) for this document. "
-                "Respond with ONLY the title, no quotes.\n\n"
-                f"Filename: {filename}\nContent preview:\n{text_preview[:400]}"
-            )
-            
-            response = await async_client.chat.completions(
-                model="sarvam-105b",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-                stream=False
-            )
-            
-            title = response.choices[0].message.content.strip().strip('"\'')
-            return title[:60] if title else os.path.splitext(filename)[0]
-        except Exception as e:
-            print(f"DocService: Title generation failed: {e}")
-            return os.path.splitext(filename)[0]
+            print(f"DocService: Metadata extraction failed: {e}")
+            return {"doc_type": "document", "title": filename}
 
     async def _extract_facts(self, document_text: str, doc_type: str) -> list[str]:
         """

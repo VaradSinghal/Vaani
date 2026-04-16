@@ -1,3 +1,8 @@
+import os
+# Force Offline Mode for ML Models to minimize latency and prevent network errors
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"
+
 import asyncio
 import json
 import re
@@ -11,6 +16,7 @@ from services.llm_service import llm_service
 from services.vector_store import vector_store
 from services.memory_service import memory_service
 from services.document_service import document_service
+from services.agent_service import agent_service
 import sys
 import codecs
 from dotenv import load_dotenv
@@ -31,9 +37,12 @@ app = FastAPI()
 
 @app.on_event("startup")
 async def startup_event():
-    # Load persisted vector store from disk
-    print("Loading vector store from disk...")
+    # Load persisted vector store and initialize the embedding model (OFFLINE)
+    print("Loading vector store and embedding model...")
     vector_store.load_from_disk()
+    vector_store.initialize()
+    print("Agent Studio: Initializing management routes...")
+    print(f"Agent Studio: {len(agent_service.list_agents())} agents loaded.")
     
     # Pre-cache filler words for instant zero-latency playback
     from services.tts_service import tts_service
@@ -123,6 +132,37 @@ async def get_user_memory(user_id: str):
     return {"user_id": user_id, "facts": facts, "count": len(facts)}
 
 
+# ─── Agent Management Endpoints ──────────────────────────────────────
+
+@app.get("/api/agents")
+async def list_agents():
+    """List all available custom agents."""
+    return {"agents": agent_service.list_agents()}
+
+class CreateAgentRequest(BaseModel):
+    name: str
+    description: str
+    system_instructions: str
+    role: str = "general"
+
+@app.post("/api/agents")
+async def create_agent(req: CreateAgentRequest):
+    """Create a new custom agent."""
+    agent = agent_service.create_agent(
+        name=req.name,
+        description=req.description,
+        system_instructions=req.system_instructions,
+        role=req.role
+    )
+    return agent
+
+@app.delete("/api/agents/{agent_id}")
+async def delete_agent(agent_id: str):
+    """Delete a custom agent."""
+    success = agent_service.delete_agent(agent_id)
+    return {"status": "success" if success else "not_found"}
+
+
 def pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int = 1, sample_width: int = 2) -> bytes:
     """Convert raw PCM Int16 bytes to a valid WAV file."""
     wav_buffer = io.BytesIO()
@@ -179,10 +219,12 @@ async def sentence_stream(token_generator):
 async def voice_agent_endpoint(websocket: WebSocket):
     await websocket.accept()
     
-    # Generate unique session ID and extract user ID from query params
+    # Generate unique session ID and extract user ID and Agent ID from query params
     session_id = str(uuid.uuid4())[:12]
     user_id = websocket.query_params.get("uid", "anonymous")
-    print(f"WS: Client connected (session={session_id}, user={user_id[:8]}...)")
+    agent_id = websocket.query_params.get("agent_id")
+    
+    print(f"WS: Client connected (session={session_id}, user={user_id[:8]}, agent={agent_id or 'default'})")
 
     try:
         while True:
@@ -238,17 +280,19 @@ async def voice_agent_endpoint(websocket: WebSocket):
             await websocket.send_json({"type": "status", "status": "thinking"})
             
             # Use the unified Agent pipeline in LLM service with memory context
+            queue = asyncio.Queue()
+            
             llm_gen = llm_service.stream_chat(
                 transcript,
                 session_id=session_id,
                 user_id=user_id,
+                tts_queue=queue,
+                agent_id=agent_id
             )
             
             
             # Step 3: Pipe LLM -> Sentence Buffer -> TTS -> Client
             await websocket.send_json({"type": "status", "status": "speaking"})
-            
-            queue = asyncio.Queue()
             
             async def tts_worker():
                 while True:
@@ -270,8 +314,8 @@ async def voice_agent_endpoint(websocket: WebSocket):
             try:
                 async for item in sentence_stream(llm_gen):
                     if isinstance(item, dict):
-                        # Handle metadata like attribution
-                        if item.get("type") == "attribution":
+                        # Handle metadata like attribution or status
+                        if item.get("type") in ["attribution", "status"]:
                             await websocket.send_json(item)
                         continue
                     

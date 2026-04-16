@@ -15,7 +15,7 @@ class LLMService:
             self.client = None
             print("LLM: Running in MOCK mode (no API key found)")
 
-    async def stream_chat(self, user_input: str, session_id: str = None, user_id: str = None, system_prompt: str = None):
+    async def stream_chat(self, user_input: str, session_id: str = None, user_id: str = None, system_prompt: str = None, tts_queue: asyncio.Queue = None, agent_id: str = None):
         """Stream chat with memory-augmented context."""
         if not self.client:
             # Mock behavior
@@ -27,11 +27,27 @@ class LLMService:
         if not system_prompt:
             import datetime
             now_str = datetime.datetime.now().isoformat()
+            
+            # Fetch custom agent instructions if agent_id is provided
+            base_instructions = "You are 'Vaani', an expert personal assistant. You help users with productivity, research, and task management."
+            if agent_id:
+                from services.agent_service import agent_service
+                agent = agent_service.get_agent(agent_id)
+                if agent:
+                    base_instructions = agent.get("system_instructions", base_instructions)
+            
+            # Fetch available documents to avoid asking user for IDs
+            from services.vector_store import vector_store
+            docs = vector_store.get_documents()
+            doc_list_str = "\n".join([f"- {d['title']} (ID: {d['doc_id']})" for d in docs]) if docs else "None"
+            
             system_prompt = (
-                f"You are 'Vaani', an expert personal assistant. Current time: {now_str}. "
+                f"{base_instructions}\n"
+                f"Current time: {now_str}. "
                 "You have access to DOCUMENT KNOWLEDGE (uploaded files) and USER MEMORY (past facts). "
                 "IMPORTANT: If a tool needs info (email, name, date) that is in your KNOWLEDGE or MEMORY, use it automatically! "
                 "Example: If user says 'Email the invoice total', search DOCUMENT KNOWLEDGE for the total first.\n\n"
+                f"[AVAILABLE DOCUMENTS (ID resolution list)]:\n{doc_list_str}\n\n"
                 "To use a tool, start with a COMMAND STRING:\n"
                 "1. GET_AGENDA\n"
                 "2. BOOK|Title|StartISO|EndISO\n"
@@ -42,7 +58,10 @@ class LLMService:
                 "7. NOTION_NOTE|text\n"
                 "8. SLACK_READ|channel\n"
                 "9. SLACK_MSG|channel|text\n"
-                "Output ONLY the command. If no tool is needed, respond naturally."
+                "10. LIVE_READ|doc_id|target_lang\n"
+                "CRITICAL: If a user asks to 'read' or 'open' a file, find the matching ID from the AVAILABLE DOCUMENTS list and use the LIVE_READ command. "
+                "DO NOT ask the user for a document ID if the title is in the list. Output ONLY the raw command string. "
+                "For normal conversation, NEVER wrap your response in quotes."
             )
 
         # Augment system prompt with memory context (document facts + user facts)
@@ -83,26 +102,38 @@ class LLMService:
                         content = delta.content
                         if first_chunk:
                             text_so_far += content
-                            if not text_so_far.strip() or len(text_so_far.strip()) < 4: continue
-                            first_chunk = False
+                            # Strip common LLM prefixes for detection
                             chk = text_so_far.strip().upper()
-                            # Check for any tool prefix in the first line of output
-                            tool_prefixes = ["GET_", "BOOK", "DETA", "CANC", "GMAI", "NOTI", "SLAC"]
-                            if any(chk.startswith(p) for p in tool_prefixes):
+                            chk = chk.replace("COMMAND:", "").replace("TOOL:", "").replace("ACTION:", "").replace("`", "").strip()
+                            
+                            # If after cleaning we have no actual identifier, continue collecting until we do
+                            if not chk or len(chk) < 3: continue
+                            
+                            first_chunk = False
+                            # Aggressive check: if it looks like a tool call (contains | and a known prefix), catch it
+                            tool_prefixes = ["GET_", "BOOK", "DETA", "CANC", "GMAI", "NOTI", "SLAC", "LIVE"]
+                            if any(chk.startswith(p) for p in tool_prefixes) or ("|" in chk and any(p in chk for p in tool_prefixes)):
                                 is_tool_call = True
                             else:
-                                yield text_so_far
+                                cleaned = text_so_far.replace('"', '').replace('--', ' ')
+                                yield cleaned
                         elif is_tool_call:
                             text_so_far += content
                         else:
-                            yield content
+                            # Clean conversational text as we stream
+                            cleaned = content.replace('"', '').replace('--', ' ')
+                            yield cleaned
             
             # Collect full response text for memory storage
             full_response = text_so_far if not is_tool_call else ""
 
             if is_tool_call:
-                # The LLM sometimes injects random newlines. Clean it completely.
+                # The LLM sometimes injects random newlines or prefixes like 'COMMAND:'. Clean it completely.
                 tool_buffer = text_so_far.replace('\n', '').replace('\r', '').strip()
+                t_prefixes = ["COMMAND:", "TOOL:", "ACTION:", "`"]
+                for p in t_prefixes:
+                    if tool_buffer.upper().startswith(p):
+                        tool_buffer = tool_buffer[len(p):].strip()
                 
                 # Instantly yield a filler phrase to trigger TTS! This drops perceived latency to ~0s!
                 yield "एक मिनट, मैं चेक करती हूँ। "
@@ -147,8 +178,41 @@ class LLMService:
                             result = slack_service.send_message(channel=parts[1].strip(), text=parts[2].strip())
                         else:
                             result = "Error: Malformed SLACK_MSG."
+                    elif tool_buffer.startswith("LIVE_READ|"):
+                        parts = tool_buffer.split("|")
+                        if len(parts) >= 3:
+                            doc_id = parts[1].strip()
+                            target_lang = parts[2].strip()
+                            
+                            from services.document_service import document_service
+                            from services.translate_service import translate_service
+                            
+                            # 1. Fetch raw text
+                            raw_text = document_service.get_full_text(doc_id)
+                            if not raw_text:
+                                result = f"I'm sorry, I couldn't find the full text for that document (ID: {doc_id})."
+                            else:
+                                # 2. Indicate starting status
+                                yield {"type": "status", "status": "reading_document"}
+                                
+                                # 3. Chunk and Translate -> TTS
+                                chunks = [c.strip() for c in raw_text.split('\n') if len(c.strip()) > 10]
+                                
+                                read_count = 0
+                                for chunk in chunks[:15]: # Cap at 15 paragraphs for safety
+                                    translated = translate_service.translate_text(
+                                        text=chunk, 
+                                        target_lang=target_lang
+                                    )
+                                    if tts_queue:
+                                        await tts_queue.put(translated)
+                                    read_count += 1
+                                    
+                                result = f"I have finished reading {read_count} sections of the document to you in {target_lang}."
+                        else:
+                            result = "Error: Malformed LIVE_READ command. Expected: LIVE_READ|doc_id|target_lang."
                     else:
-                        result = f"Unknown command: {tool_buffer}"
+                        result = f"I tried to use a tool but it wasn't recognized. Command: {tool_buffer}"
                 except Exception as e:
                     result = f"Tool failure: {str(e)}"
                     print(f"LLM TOOL ERROR: {result} - Buffer: {tool_buffer}")
