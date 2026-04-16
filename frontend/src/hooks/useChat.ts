@@ -12,7 +12,8 @@ import {
   Timestamp,
   doc,
   getDoc,
-  setDoc
+  setDoc,
+  updateDoc
 } from "firebase/firestore";
 import { db } from "@/utils/firebase";
 import { useAuth } from "@/context/AuthContext";
@@ -80,11 +81,15 @@ export function useChat(sessionId?: string) {
     return () => unsubscribe();
   }, [user, sessionId]);
 
-  const createSession = async (title: string = "New Conversation") => {
+  const createSession = async (title?: string) => {
     if (!user) return null;
 
+    const sessionTitle = title && title !== "New Conversation" 
+      ? title 
+      : `Chat on ${new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`;
+
     const sessionRef = await addDoc(collection(db, "users", user.uid, "sessions"), {
-      title,
+      title: sessionTitle,
       createdAt: serverTimestamp(),
     });
 
@@ -99,6 +104,30 @@ export function useChat(sessionId?: string) {
       text,
       createdAt: serverTimestamp(),
     });
+
+    if (role === "User") {
+      setSessions(prev => {
+        const session = prev.find(s => s.id === sessId);
+        if (session && session.title.startsWith("Chat on ")) {
+          // Fire and forget title update
+          fetch("http://localhost:8000/api/generate-title", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message: text })
+          })
+          .then(res => res.json())
+          .then(data => {
+            if (data.title) {
+              updateDoc(doc(db, "users", user.uid, "sessions", sessId), {
+                title: data.title
+              }).catch(console.error);
+            }
+          })
+          .catch(console.error);
+        }
+        return prev;
+      });
+    }
   };
 
   return {

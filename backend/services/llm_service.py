@@ -48,4 +48,33 @@ class LLMService:
         except Exception as e:
             print(f"LLM Streaming Error: {e}")
 
+    async def generate_title(self, user_input: str) -> str:
+        if not self.client:
+            return "Mock Session"
+            
+        system_prompt = (
+            "Generate a very short, concise title (max 4 words) summarizing the following user message. "
+            "Do not include quotes or any extra text, just the topic."
+        )
+        title = ""
+        try:
+            stream = await self.client.chat.completions(
+                model="sarvam-105b",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_input}
+                ],
+                temperature=0.3,
+                stream=True
+            )
+            async for chunk in stream:
+                if chunk.choices:
+                    delta = chunk.choices[0].delta
+                    if delta.content:
+                        title += delta.content
+            return title.strip('"\' \n').title()[:50]
+        except Exception as e:
+            print(f"LLM Title Gen Error: {e}")
+            return "New Chat"
+
 llm_service = LLMService()

@@ -19,7 +19,7 @@ export function Sidebar() {
   };
 
   return (
-    <div className="w-[260px] h-screen bg-cur-dark flex flex-col border-r border-white/5 transition-all">
+    <div className="w-[260px] h-screen bg-[#26251e] flex flex-col border-r border-white/5 transition-all">
       {/* New Chat Button */}
       <div className="p-3">
         <button 

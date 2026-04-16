@@ -20,7 +20,27 @@ if sys.platform == "win32":
 
 load_dotenv()
 
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class TitleRequest(BaseModel):
+    message: str
+
+@app.post("/api/generate-title")
+async def generate_title_endpoint(req: TitleRequest):
+    title = await llm_service.generate_title(req.message)
+    return {"title": title}
+
 
 def pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int = 1, sample_width: int = 2) -> bytes:
     """Convert raw PCM Int16 bytes to a valid WAV file."""

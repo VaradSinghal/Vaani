@@ -55,6 +55,8 @@
 
   --color-cursor-orange: var(--cur-orange);
   --color-cursor-dark: var(--cur-dark);
+  --color-cur-cream: var(--cur-cream);
+  --color-cur-dark: var(--cur-dark);
   
   --radius-8: 8px;
   --radius-10: 10px;
