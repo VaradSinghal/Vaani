@@ -29,9 +29,15 @@ app = FastAPI()
 async def startup_event():
     # Pre-cache filler words for instant zero-latency playback
     from services.tts_service import tts_service
+    from utils.google_auth import get_google_credentials
     print("Pre-caching zero-latency filler words...")
     await tts_service.get_cached_or_synthesize("एक मिनट, मैं चेक करती हूँ।", "hi-IN")
     await tts_service.get_cached_or_synthesize("एक मिनट, मैं चेक करती हूँ।", "en-IN")
+    
+    print("Checking Google Workspace Authentication...")
+    # This will open a browser window if token.json is missing/invalid
+    # It runs at startup so it doesn't block the WebSocket loop later
+    get_google_credentials(interactive=True)
 
 app.add_middleware(
     CORSMiddleware,
@@ -152,37 +158,11 @@ async def voice_agent_endpoint(websocket: WebSocket):
                 "language": language
             })
             
-            # Step 2: Edge Intent Routing vs LLM - Generate response
+            # Step 2: Agent Response Generation
             await websocket.send_json({"type": "status", "status": "thinking"})
             
-            transcript_lower = transcript.strip().lower()
-            calendar_intents = [
-                "check my calendar", "what's my schedule", "calendar", 
-                "agenda", "events today", "meetings", "check my schedule", 
-                "what do i have today", "mere meetings", "calendar check karo"
-            ]
-            
-            is_fast_route = any(intent in transcript_lower for intent in calendar_intents)
-            
-            if is_fast_route:
-                print("WS: ROUTER -> Fast-routing to Calendar Tool.")
-                
-                # Push zero-latency filler directly to frontend
-                filler_phrase = "एक मिनट, मैं चेक करती हूँ।"
-                await websocket.send_json({"type": "agent_transcript", "text": filler_phrase})
-                audio_bytes = await tts_service.get_cached_or_synthesize(filler_phrase, language)
-                if audio_bytes:
-                    await websocket.send_bytes(audio_bytes)
-                    
-                # Execute tool directly in Python
-                from services.calendar_service import calendar_service
-                result = calendar_service.get_upcoming_events()
-                
-                # Generate final formatting via LLM
-                fast_prompt = f"Summarize these events concisely for voice playback: {result}"
-                llm_gen = llm_service.stream_chat(transcript, system_prompt=fast_prompt)
-            else:
-                llm_gen = llm_service.stream_chat(transcript)
+            # Use the unified Agent pipeline in LLM service (handles tools, filler words, and summary)
+            llm_gen = llm_service.stream_chat(transcript)
             
             
             # Step 3: Pipe LLM -> Sentence Buffer -> TTS -> Client

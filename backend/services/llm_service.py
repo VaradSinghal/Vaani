@@ -27,12 +27,17 @@ class LLMService:
             now_str = datetime.datetime.now().isoformat()
             system_prompt = (
                 f"You are 'Vaani', a concise voice agent. Current time: {now_str}. "
-                "To use a calendar tool, your very first characters MUST be a COMMAND STRING, nothing else. "
+                "To use a tool, your very first characters MUST be a COMMAND STRING, nothing else. "
                 "Commands:\n"
                 "1. GET_AGENDA\n"
                 "2. BOOK|Meeting Title|2026-04-16T15:00:00|2026-04-16T16:00:00\n"
                 "3. DETAILS|Meeting Title\n"
                 "4. CANCEL|Meeting Title\n"
+                "5. GMAIL_READ\n"
+                "6. GMAIL_SEND|recipient|subject|body\n"
+                "7. NOTION_NOTE|text\n"
+                "8. SLACK_READ|channel\n"
+                "9. SLACK_MSG|channel|text\n"
                 "To use, output JUST the command. Do not add formatting. "
                 "If no tool is needed, respond naturally."
             )
@@ -61,8 +66,10 @@ class LLMService:
                             text_so_far += content
                             if not text_so_far.strip() or len(text_so_far.strip()) < 4: continue
                             first_chunk = False
-                            chk = text_so_far.strip()
-                            if chk.startswith("GET_") or chk.startswith("BOOK") or chk.startswith("DETA") or chk.startswith("CANC"):
+                            chk = text_so_far.strip().upper()
+                            # Check for any tool prefix in the first line of output
+                            tool_prefixes = ["GET_", "BOOK", "DETA", "CANC", "GMAI", "NOTI", "SLAC"]
+                            if any(chk.startswith(p) for p in tool_prefixes):
                                 is_tool_call = True
                             else:
                                 yield text_so_far
@@ -72,7 +79,7 @@ class LLMService:
                             yield content
             
             if is_tool_call:
-                # The LLM sometimes injects random newlines in ISO strings (e.g., 14:\n\n00). Clean it completely.
+                # The LLM sometimes injects random newlines. Clean it completely.
                 tool_buffer = text_so_far.replace('\n', '').replace('\r', '').strip()
                 
                 # Instantly yield a filler phrase to trigger TTS! This drops perceived latency to ~0s!
@@ -80,35 +87,44 @@ class LLMService:
                 
                 try:
                     from services.calendar_service import calendar_service
+                    from services.gmail_service import gmail_service
+                    from services.notion_service import notion_service
+                    from services.slack_service import slack_service
                     
                     if tool_buffer.startswith("GET_AGENDA"):
-                        print(f"LLM TOOL: GET_AGENDA")
                         result = calendar_service.get_upcoming_events()
                     elif tool_buffer.startswith("BOOK|"):
                         parts = tool_buffer.split("|")
                         if len(parts) >= 4:
-                            print(f"LLM TOOL: BOOK {parts[1]}")
-                            result = calendar_service.schedule_event(
-                                summary=parts[1].strip(),
-                                start_time=parts[2].strip(),
-                                end_time=parts[3].strip()
-                            )
+                            result = calendar_service.schedule_event(summary=parts[1].strip(), start_time=parts[2].strip(), end_time=parts[3].strip())
                         else:
-                            result = f"Error: Malformed BOOK command: {tool_buffer}"
+                            result = f"Error: Malformed BOOK command."
                     elif tool_buffer.startswith("DETAILS|"):
                         parts = tool_buffer.split("|")
-                        if len(parts) >= 2:
-                            print(f"LLM TOOL: DETAILS {parts[1]}")
-                            result = calendar_service.get_event_details(parts[1].strip())
-                        else:
-                            result = "Error: Malformed DETAILS command."
+                        result = calendar_service.get_event_details(parts[1].strip()) if len(parts) >= 2 else "Error: Malformed DETAILS."
                     elif tool_buffer.startswith("CANCEL|"):
                         parts = tool_buffer.split("|")
-                        if len(parts) >= 2:
-                            print(f"LLM TOOL: CANCEL {parts[1]}")
-                            result = calendar_service.cancel_event(parts[1].strip())
+                        result = calendar_service.cancel_event(parts[1].strip()) if len(parts) >= 2 else "Error: Malformed CANCEL."
+                    elif tool_buffer.startswith("GMAIL_READ"):
+                        result = gmail_service.get_unread_emails()
+                    elif tool_buffer.startswith("GMAIL_SEND|"):
+                        parts = tool_buffer.split("|")
+                        if len(parts) >= 4:
+                            result = gmail_service.send_email(to=parts[1].strip(), subject=parts[2].strip(), body=parts[3].strip())
                         else:
-                            result = "Error: Malformed CANCEL command."
+                            result = "Error: Malformed GMAIL_SEND."
+                    elif tool_buffer.startswith("NOTION_NOTE|"):
+                        parts = tool_buffer.split("|")
+                        result = notion_service.append_voice_note(parts[1].strip()) if len(parts) >= 2 else "Error: Malformed NOTION_NOTE."
+                    elif tool_buffer.startswith("SLACK_READ|"):
+                        parts = tool_buffer.split("|")
+                        result = slack_service.read_latest_messages(parts[1].strip()) if len(parts) >= 2 else "Error: Malformed SLACK_READ."
+                    elif tool_buffer.startswith("SLACK_MSG|"):
+                        parts = tool_buffer.split("|")
+                        if len(parts) >= 3:
+                            result = slack_service.send_message(channel=parts[1].strip(), text=parts[2].strip())
+                        else:
+                            result = "Error: Malformed SLACK_MSG."
                     else:
                         result = f"Unknown command: {tool_buffer}"
                 except Exception as e:

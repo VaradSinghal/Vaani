@@ -1,40 +1,20 @@
 import datetime
 import os.path
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-
-SCOPES = ['https://www.googleapis.com/auth/calendar']
+from utils.google_auth import get_google_credentials
 
 class CalendarService:
     def __init__(self):
         self.creds = None
         self.service = None
-        # We don't authenticate immediately on load because it might block server startup headless.
-        # We will lazy-load authentication.
 
     def _authenticate(self):
         if self.service:
             return True
             
         try:
-            if os.path.exists('token.json'):
-                self.creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-                
-            if not self.creds or not self.creds.valid:
-                if self.creds and self.creds.expired and self.creds.refresh_token:
-                    self.creds.refresh(Request())
-                else:
-                    if not os.path.exists('credentials.json'):
-                        print("CALENDAR: Missing credentials.json")
-                        return False
-                    flow = InstalledAppFlow.from_client_secrets_file(
-                        'credentials.json', SCOPES)
-                    self.creds = flow.run_local_server(port=8080)
-                with open('token.json', 'w') as token:
-                    token.write(self.creds.to_json())
+            self.creds = get_google_credentials(interactive=False)
+            if not self.creds: return False
             
             self.service = build('calendar', 'v3', credentials=self.creds)
             print("CALENDAR: Authenticated successfully")
