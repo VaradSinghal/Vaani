@@ -1,6 +1,6 @@
 # Vaani 🎙️
 
-Vaani is a production-ready, ultra-low latency multilingual voice agent platform. It transforms standard AI interactions into stateful, context-aware productivity sessions through a custom "Intelligence Layer" that combines RAG-less knowledge retrieval, multi-turn conversational memory, and intelligent document parsing.
+Vaani is a production-ready, ultra-low latency multilingual voice agent platform. It transforms standard AI interactions into stateful, context-aware productivity sessions through a custom "Intelligence Layer" that combines RAG-less knowledge retrieval, multi-turn conversational memory, and **natural document discovery** (no IDs required, just use document titles).
 
 ---
 
