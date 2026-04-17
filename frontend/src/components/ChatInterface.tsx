@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { useDocuments } from "../hooks/useDocuments";
 import { useAuth } from "../context/AuthContext";
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from 'react-markdown';
 
 interface ChatInterfaceProps {
   sessionId: string;
@@ -116,23 +117,25 @@ export function ChatInterface({ sessionId }: ChatInterfaceProps) {
             messages.map((m, idx) => (
               <div
                 key={m.id}
-                className={`flex flex-col gap-2 animate-in fade-in slide-in-from-bottom-2 duration-500 fill-mode-both`}
-                style={{ animationDelay: `${idx * 50}ms` }}
+                className={`flex flex-col gap-1.5 animate-in fade-in slide-in-from-bottom-2 duration-400 fill-mode-both`}
+                style={{ animationDelay: `${idx * 40}ms` }}
               >
                 <div className={`flex ${m.role === "User" ? "justify-end" : "justify-start"}`}>
-                  <div className={`max-w-[88%] px-7 py-5 shadow-2xl shadow-black/[0.02] ${m.role === "User"
-                      ? "bg-[#2d2c25] text-[#fdfcf9] rounded-[28px] rounded-tr-none"
-                      : "bg-white border border-black/[0.03] text-black/90 rounded-[28px] rounded-tl-none font-serif text-[19px] leading-[1.6]"
+                  <div className={`max-w-[85%] px-5 py-3.5 shadow-xl shadow-black/[0.01] ${m.role === "User"
+                      ? "bg-[#2d2c25] text-[#fdfcf9] rounded-[24px] rounded-tr-none text-sm"
+                      : "bg-white border border-black/[0.04] text-black/85 rounded-[24px] rounded-tl-none text-[15px] leading-relaxed font-medium"
                     }`}>
-                    {m.text}
+                    <div className="prose prose-sm max-w-none prose-p:leading-relaxed prose-pre:bg-black/5 prose-pre:rounded-xl">
+                      <ReactMarkdown>{m.text}</ReactMarkdown>
+                    </div>
 
                     {/* Attribution Badges */}
                     {m.role === "Agent" && m.sources && m.sources.length > 0 && (
-                      <div className="mt-4 pt-4 border-t border-black/[0.03] flex flex-wrap gap-2">
+                      <div className="mt-3 pt-3 border-t border-black/[0.02] flex flex-wrap gap-1.5">
                         {m.sources.map((src, i) => (
-                          <div key={i} className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-black/[0.02] border border-black/[0.03] group cursor-default hover:bg-black/[0.04] transition-colors">
-                            <span className="text-[10px]">📄</span>
-                            <span className="font-mono text-[9px] text-black/40 uppercase tracking-widest font-bold">{src}</span>
+                          <div key={i} className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-black/[0.01] border border-black/[0.02] group cursor-default">
+                            <span className="text-[9px]">📄</span>
+                            <span className="font-mono text-[8px] text-black/30 uppercase tracking-widest font-bold">{src}</span>
                           </div>
                         ))}
                       </div>
