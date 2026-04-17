@@ -28,7 +28,7 @@ class TTSService:
             self._cache[cache_key] = audio
         return audio
 
-    async def synthesize(self, text: str, lang: str = "hi-IN") -> bytes | None:
+    async def synthesize(self, text: str, lang: str = "hi-IN", speaker: str = "anushka") -> bytes | None:
         """
         Convert text to speech audio bytes (WAV).
         Returns the raw audio bytes or None on error.
@@ -42,7 +42,7 @@ class TTSService:
             response = await self.client.text_to_speech.convert(
                 text=text,
                 target_language_code=lang,
-                speaker="anushka",
+                speaker=speaker,
                 model="bulbul:v2"
             )
             

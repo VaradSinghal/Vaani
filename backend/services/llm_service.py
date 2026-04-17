@@ -30,12 +30,29 @@ class LLMService:
             
             # Fetch custom agent instructions if agent_id is provided
             base_instructions = "You are 'Vaani', an expert personal assistant. You help users with productivity, research, and task management."
+            tools_to_inject = ["GMAIL", "SLACK", "CALENDAR", "NOTION", "LIVE_READ"] # Default
+            
             if agent_id:
                 from services.agent_service import agent_service
                 agent = agent_service.get_agent(agent_id)
                 if agent:
                     base_instructions = agent.get("system_instructions", base_instructions)
+                    tools_to_inject = agent.get("tools_enabled", tools_to_inject)
             
+            # Map tool IDs to prompt strings
+            tool_definitions = {
+                "GMAIL": "5. GMAIL_READ\n6. GMAIL_SEND|recipient|subject|body\n",
+                "SLACK": "8. SLACK_READ|channel\n9. SLACK_MSG|channel|text\n",
+                "NOTION": "7. NOTION_NOTE|text\n",
+                "CALENDAR": "1. GET_AGENDA\n2. BOOK|Title|StartISO|EndISO\n3. DETAILS|Title\n4. CANCEL|Title\n",
+                "LIVE_READ": "10. LIVE_READ|doc_id|target_lang\n"
+            }
+            
+            injected_tools_str = ""
+            for tool_id in tools_to_inject:
+                if tool_id in tool_definitions:
+                    injected_tools_str += tool_definitions[tool_id]
+
             # Fetch available documents to avoid asking user for IDs
             from services.vector_store import vector_store
             docs = vector_store.get_documents()
@@ -49,16 +66,7 @@ class LLMService:
                 "Example: If user says 'Email the invoice total', search DOCUMENT KNOWLEDGE for the total first.\n\n"
                 f"[AVAILABLE DOCUMENTS (ID resolution list)]:\n{doc_list_str}\n\n"
                 "To use a tool, start with a COMMAND STRING:\n"
-                "1. GET_AGENDA\n"
-                "2. BOOK|Title|StartISO|EndISO\n"
-                "3. DETAILS|Title\n"
-                "4. CANCEL|Title\n"
-                "5. GMAIL_READ\n"
-                "6. GMAIL_SEND|recipient|subject|body\n"
-                "7. NOTION_NOTE|text\n"
-                "8. SLACK_READ|channel\n"
-                "9. SLACK_MSG|channel|text\n"
-                "10. LIVE_READ|doc_id|target_lang\n"
+                f"{injected_tools_str}"
                 "CRITICAL: If a user asks to 'read' or 'open' a file, find the matching ID from the AVAILABLE DOCUMENTS list and use the LIVE_READ command. "
                 "DO NOT ask the user for a document ID if the title is in the list. Output ONLY the raw command string. "
                 "For normal conversation, NEVER wrap your response in quotes."
@@ -85,7 +93,7 @@ class LLMService:
             messages.append({"role": "user", "content": user_input})
 
             stream = await self.client.chat.completions(
-                model="sarvam-105b",
+                model="sarvam-30b",
                 messages=messages,
                 temperature=0.7,
                 stream=True

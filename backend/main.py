@@ -19,6 +19,9 @@ from services.document_service import document_service
 from services.agent_service import agent_service
 import sys
 import codecs
+import base64
+from typing import Optional, List
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
 # Fix Windows console encoding for UTF-8
@@ -144,6 +147,16 @@ class CreateAgentRequest(BaseModel):
     description: str
     system_instructions: str
     role: str = "general"
+    tools_enabled: Optional[List[str]] = None
+    voice_id: str = "anushka"
+
+class UpdateAgentRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    system_instructions: Optional[str] = None
+    role: Optional[str] = None
+    tools_enabled: Optional[List[str]] = None
+    voice_id: Optional[str] = None
 
 @app.post("/api/agents")
 async def create_agent(req: CreateAgentRequest):
@@ -152,9 +165,43 @@ async def create_agent(req: CreateAgentRequest):
         name=req.name,
         description=req.description,
         system_instructions=req.system_instructions,
-        role=req.role
+        role=req.role,
+        tools_enabled=req.tools_enabled,
+        voice_id=req.voice_id
     )
     return agent
+
+@app.get("/api/voices")
+async def get_voices():
+    """List available vocal personas from Bulbul v2."""
+    return [
+        {"id": "anushka", "name": "Anushka", "gender": "Female", "style": "Clear, Professional"},
+        {"id": "meera", "name": "Meera", "gender": "Female", "style": "Warm, Empathetic"},
+        {"id": "pavithra", "name": "Pavithra", "gender": "Female", "style": "Formal, Informative"},
+        {"id": "amrit", "name": "Amrit", "gender": "Male", "style": "Deep, Authoritative"},
+        {"id": "vatsal", "name": "Vatsal", "gender": "Male", "style": "Friendly, Energetic"},
+        {"id": "kumar", "name": "Kumar", "gender": "Male", "style": "Mature, Trustworthy"},
+    ]
+
+class PreviewVoiceRequest(BaseModel):
+    voice_id: str
+    text: str
+
+@app.post("/api/voices/preview")
+async def preview_voice(req: PreviewVoiceRequest):
+    """Generate sample audio for UI auditioning."""
+    audio = await tts_service.synthesize(req.text, speaker=req.voice_id)
+    if not audio:
+        return {"error": "Synthesis failed"}
+    return {"audio": base64.b64encode(audio).decode("utf-8")}
+
+@app.put("/api/agents/{agent_id}")
+async def update_agent(agent_id: str, req: UpdateAgentRequest):
+    """Update an existing custom agent."""
+    updated = agent_service.update_agent(agent_id, req.dict(exclude_unset=True))
+    if not updated:
+        return {"error": "Agent not found"}
+    return updated
 
 @app.delete("/api/agents/{agent_id}")
 async def delete_agent(agent_id: str):
@@ -188,29 +235,36 @@ def pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int = 1, sa
 # Utility to split streaming text into sentences for TTS
 async def sentence_stream(token_generator):
     buffer = ""
-    # Punctuation marks for various languages including Indian (।, ., ?, !), plus comma/colons for faster first-chunks
-    sentence_endings = r"[।\.\?\!\,:\n]"
+    # More aggressive splitting: yield on commas, semicolons, and newlines for faster TTS startup
+    sentence_endings = r"[।\.\?\!\,;\n]"
+    max_words_before_yield = 12
     
     async for token in token_generator:
         if isinstance(token, dict):
-            # Pass through metadata objects (like attribution)
             yield token
             continue
             
         buffer += str(token)
-        # Check if we have a full sentence
-        parts = re.split(f"({sentence_endings})", buffer)
         
-        # If we have at least one ending mark
-        if len(parts) > 1:
-            # Reconstruct sentences except the last part (which might be incomplete)
-            for i in range(0, len(parts) - 1, 2):
-                sentence = parts[i] + parts[i+1]
-                if sentence.strip():
-                    yield sentence.strip()
-            buffer = parts[-1]
+        # Check for word count to force a yield if the sentence is too long
+        word_count = len(buffer.split())
+        
+        # Split on punctuation OR word count limit
+        if re.search(sentence_endings, buffer) or word_count >= max_words_before_yield:
+            parts = re.split(f"({sentence_endings})", buffer)
+            
+            if len(parts) > 1:
+                # Standard punctuation split
+                for i in range(0, len(parts) - 1, 2):
+                    sentence = parts[i] + parts[i+1]
+                    if sentence.strip():
+                        yield sentence.strip()
+                buffer = parts[-1]
+            elif word_count >= max_words_before_yield:
+                # Word count force yield
+                yield buffer.strip()
+                buffer = ""
     
-    # Yield remaining text if any
     if buffer.strip():
         yield buffer.strip()
 
@@ -224,7 +278,14 @@ async def voice_agent_endpoint(websocket: WebSocket):
     user_id = websocket.query_params.get("uid", "anonymous")
     agent_id = websocket.query_params.get("agent_id")
     
-    print(f"WS: Client connected (session={session_id}, user={user_id[:8]}, agent={agent_id or 'default'})")
+    # Resolve agent's voice
+    speaker_id = "anushka"
+    if agent_id:
+        agent = agent_service.get_agent(agent_id)
+        if agent:
+            speaker_id = agent.get("voice_id", "anushka")
+    
+    print(f"WS: Client connected (session={session_id}, user={user_id[:8]}, agent={agent_id or 'default'}, voice={speaker_id})")
 
     try:
         while True:
@@ -301,7 +362,7 @@ async def voice_agent_endpoint(websocket: WebSocket):
                         break
                     
                     # TTS - Convert sentence to speech and send
-                    audio_bytes = await tts_service.get_cached_or_synthesize(sentence, language)
+                    audio_bytes = await tts_service.synthesize(sentence, speaker=speaker_id)
                     if audio_bytes:
                         await websocket.send_bytes(audio_bytes)
                         
